@@ -1,0 +1,58 @@
+{
+  "title": "DBS Dahua Access",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Dahua access controller",
+        "description": "Enter the LAN address and NetSDK credentials for the controller.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Dahua access controller",
+        "description": "Update network address or credentials for the same physical controller.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Dahua access controller",
+        "description": "Update credentials for this controller.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the controller.",
+      "invalid_auth": "Invalid username or password.",
+      "sdk_unavailable": "Dahua NetSDK is not available on this Home Assistant system."
+    },
+    "abort": {
+      "already_configured": "This controller is already configured.",
+      "reauth_successful": "Reauthentication was successful.",
+      "unique_id_mismatch": "The controller serial number does not match this config entry."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DBS Dahua Access options",
+        "data": {
+          "tag_events": "Fire Home Assistant tag_scanned events for card reads",
+          "mask_cards_in_logs": "Mask card numbers in DBS Dahua Access events"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# Local secrets and machine-specific files
+secrets/
+sdk/
+*.local
+.env
+
+# Python local/runtime files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Tooling output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+lab_captures/

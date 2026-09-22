@@ -1,0 +1,12 @@
+{
+  "domain": "dbs_dahua_access",
+  "name": "DBS Dahua Access",
+  "codeowners": ["@rafalszm"],
+  "config_flow": true,
+  "documentation": "https://github.com/rafalszm/DBS-Dahua-Access",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/rafalszm/DBS-Dahua-Access/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
