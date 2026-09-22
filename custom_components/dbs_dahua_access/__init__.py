@@ -43,6 +43,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except DahuaConnectionError as err:
         raise ConfigEntryNotReady(str(err)) from err
 
+    if device_info.name and device_info.name != entry.title:
+        hass.config_entries.async_update_entry(
+            entry,
+            title=device_info.name,
+            data={
+                **entry.data,
+                CONF_DEVICE_NAME: device_info.name,
+            },
+        )
+
     runtime = DahuaAccessRuntime(hass, entry, client, device_info)
     await runtime.async_start()
     hass.data[DOMAIN][entry.entry_id] = runtime

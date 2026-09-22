@@ -1423,3 +1423,13 @@ W `0.1.2` wykrywanie zostało zmienione tak, aby najpierw pytać kontroler o lic
 - kanały `AccessControl` są używane tylko do wzbogacenia nazw dla już ustalonej liczby drzwi,
 - encje `Przejście 5+` zostają usunięte z rejestru encji, jeśli powstały po wcześniejszej wersji integracji,
 - jeżeli kontroler nie odda liczby przejść żadną znaną metodą, integracja używa fallbacku technicznego i nie traktuje go jako wykrycia po typie urządzenia.
+
+### 24.3. Nazwy kontrolera i przejść z SDK
+
+W `0.1.3` poprawiono priorytety zgodnie z labem:
+
+- nazwa kontrolera jest pobierana z konfiguracji SDK `General.MachineName`, jeżeli kontroler ją zwraca,
+- przy starcie integracja aktualizuje tytuł istniejącego `Config Entry`, jeśli wcześniej został zapisany sam host/IP,
+- nazwy przejść są pobierane z `GETSUBCONTROLLER_INFO`, jeżeli metoda jest wspierana,
+- `szDoorName` z eventu dostępu dalej ma pierwszeństwo jako najdokładniejsza nazwa przejścia dla danego zdarzenia,
+- fallback `Przejście <nr>` jest używany dopiero, gdy SDK nie odda nazwy.

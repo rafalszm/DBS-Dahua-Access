@@ -144,12 +144,16 @@ class NetSDKAccessClient:
     def discover_doors(self) -> list[AccessDoor]:
         """Ask the controller for its door/passage count and return doors."""
         self.connect()
+        doors = self._doors_from_subcontrollers()
+        if doors:
+            return doors
+
         door_count, count_source = self._discover_door_count()
         if door_count is None:
             door_count = 4
             count_source = "fallback"
 
-        doors: list[AccessDoor] = []
+        doors = []
         for door_id in range(1, max(1, min(door_count, 64)) + 1):
             channel = door_id - 1
             buffer = create_string_buffer(512 * 1024)
@@ -162,7 +166,8 @@ class NetSDKAccessClient:
         return doors
 
     def _discover_door_count(self) -> tuple[int | None, str]:
-        count = self._door_count_from_subcontrollers()
+        subcontrollers = self._get_subcontrollers()
+        count = self._door_count_from_subcontrollers(subcontrollers)
         if count:
             return count, "subcontroller_info"
         count = self._door_count_from_access_control_general()
@@ -170,14 +175,44 @@ class NetSDKAccessClient:
             return count, "access_control_general"
         return None, "unknown"
 
-    def _door_count_from_subcontrollers(self) -> int | None:
+    def _doors_from_subcontrollers(self) -> list[AccessDoor]:
+        subcontrollers = self._get_subcontrollers()
+        if not subcontrollers:
+            return []
+
+        doors: dict[int, AccessDoor] = {}
+        next_door_id = 1
+        for item in subcontrollers:
+            subcontroller_name = _decode_bytes(getattr(item, "szSubControllerName", b""))
+            door_count = int(getattr(item, "nDoorNum", 0))
+            item_reader_doors: list[int] = []
+            for reader_index in range(min(max(door_count, 0), 128)):
+                reader = item.stuReaderInfo[reader_index]
+                door_id = int(getattr(reader, "nDoor", 0)) or next_door_id
+                if not 0 < door_id <= 64:
+                    continue
+                label = self._door_label_from_subcontroller(subcontroller_name, door_id, door_count)
+                doors[door_id] = AccessDoor(door_id=door_id, label=label, source="subcontroller_info")
+                item_reader_doors.append(door_id)
+                next_door_id = max(next_door_id, door_id + 1)
+
+            if door_count and not item_reader_doors:
+                start = next_door_id
+                for door_id in range(start, min(start + door_count, 65)):
+                    label = self._door_label_from_subcontroller(subcontroller_name, door_id, door_count)
+                    doors[door_id] = AccessDoor(door_id=door_id, label=label, source="subcontroller_info")
+                    next_door_id = max(next_door_id, door_id + 1)
+
+        return [doors[door_id] for door_id in sorted(doors)]
+
+    def _get_subcontrollers(self) -> list[Any]:
         structs = self._sdk_modules["structs"]
         enums = self._sdk_modules["enums"]
         if not all(
             hasattr(structs, name)
             for name in ("NET_IN_GET_SUB_CONTROLLER_INFO", "NET_OUT_GET_SUB_CONTROLLER_INFO")
         ):
-            return None
+            return []
 
         in_param = structs.NET_IN_GET_SUB_CONTROLLER_INFO()
         in_param.dwSize = sizeof(structs.NET_IN_GET_SUB_CONTROLLER_INFO)
@@ -198,16 +233,20 @@ class NetSDKAccessClient:
         )
         if not ok:
             _LOGGER.debug("Dahua subcontroller door-count query failed: %s", self._sdk.GetLastErrorMessage())
-            return None
+            return []
 
         returned = max(0, min(int(out_param.nRetNum), 64))
         if returned == 0:
+            return []
+        return [out_param.stuSubControllerInfo[index] for index in range(returned)]
+
+    def _door_count_from_subcontrollers(self, subcontrollers: list[Any]) -> int | None:
+        if not subcontrollers:
             return None
 
         explicit_counts: list[int] = []
         reader_door_ids: list[int] = []
-        for index in range(returned):
-            item = out_param.stuSubControllerInfo[index]
+        for item in subcontrollers:
             door_count = int(getattr(item, "nDoorNum", 0))
             if 0 < door_count <= 64:
                 explicit_counts.append(door_count)
@@ -224,6 +263,15 @@ class NetSDKAccessClient:
         if explicit_counts:
             return sum(explicit_counts)
         return None
+
+    @staticmethod
+    def _door_label_from_subcontroller(subcontroller_name: str, door_id: int, door_count: int) -> str:
+        name = subcontroller_name.strip()
+        if not name:
+            return resolve_door_label(door_id)
+        if door_count <= 1:
+            return name
+        return f"{name} {door_id}"
 
     def _door_count_from_access_control_general(self) -> int | None:
         for channel in (-1, 0):
@@ -409,18 +457,19 @@ class NetSDKAccessClient:
     def _probe_device_name(self) -> str:
         """Try to read the controller name from Dahua config."""
         for command in ("General", "DeviceInfo", "SystemInfo"):
-            buffer = create_string_buffer(512 * 1024)
-            error = c_int(0)
-            try:
-                ok = bool(self._sdk.GetNewDevConfig(self._login_id, command, -1, buffer, len(buffer), error, 3000))
-            except Exception:
-                ok = False
-            raw = bytes(buffer).split(b"\x00", 1)[0]
-            if not ok and not raw:
-                continue
-            name = self._name_from_config(raw)
-            if name:
-                return name
+            for channel in (-1, 0):
+                buffer = create_string_buffer(512 * 1024)
+                error = c_int(0)
+                try:
+                    ok = bool(self._sdk.GetNewDevConfig(self._login_id, command, channel, buffer, len(buffer), error, 3000))
+                except Exception:
+                    ok = False
+                raw = bytes(buffer).split(b"\x00", 1)[0]
+                if not ok and not raw:
+                    continue
+                name = self._name_from_config(raw)
+                if name:
+                    return name
         return ""
 
     def _handle_message(self, l_command: Any, l_login_id: Any, p_buf: Any, dw_buf_len: Any, n_event_id: Any) -> None:
@@ -524,7 +573,7 @@ class NetSDKAccessClient:
             return ""
         for key, value in _walk_text_values(parsed):
             key_lower = key.lower()
-            if value and key_lower in {"machinename", "devicename", "hostname", "name"}:
+            if value and key_lower in {"machinename", "devicename", "hostname", "name", "szmachinename"}:
                 return value
         return ""
 
