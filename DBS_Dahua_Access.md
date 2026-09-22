@@ -1395,3 +1395,19 @@ Brama przed oznaczeniem jako produkcyjny HACS:
 2. Zdecydować sposób pakowania natywnych bibliotek NetSDK dla HACS.
 3. Uruchomić test w prawdziwym HA na `10.10.30.30`.
 4. Dodać testy HA z mockowanym klientem NetSDK.
+
+### 24.1. Bundlowanie Dahua NetSDK w HACS
+
+Pierwszy test w Home Assistant zwrócił `sdk_unavailable`, ponieważ HACS zainstalował komponent, ale nie miał skąd zainstalować prywatnego pakietu Dahua `NetSDK`.
+
+Dodano bundlowane wheel'e z pobranych paczek SDK:
+
+```text
+NetSDK-2.0.0.1-py3-none-linux_x86_64.whl
+NetSDK-2.0.0.1-py3-none-linux_i686.whl
+NetSDK-2.0.0.1-py3-none-win_amd64.whl
+```
+
+Loader integracji wybiera wheel na podstawie systemu i architektury, rozpakowuje go lokalnie do ignorowanego katalogu runtime i dopiero wtedy importuje `NetSDK`.
+
+Ważne ograniczenie: w aktualnie pobranych paczkach Dahua nie ma wheel'a Linux `arm64/aarch64`. Jeżeli Home Assistant działa na ARM64, integracja nadal nie może załadować natywnego SDK, ale pokaże już dokładny komunikat o braku tej architektury zamiast ogólnego `sdk_unavailable`.

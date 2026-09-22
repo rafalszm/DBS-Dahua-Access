@@ -36,7 +36,8 @@
     "error": {
       "cannot_connect": "Cannot connect to the controller.",
       "invalid_auth": "Invalid username or password.",
-      "sdk_unavailable": "Dahua NetSDK is not available on this Home Assistant system."
+      "sdk_unavailable": "Dahua NetSDK is not available for this Home Assistant system architecture.",
+      "sdk_arm64_unavailable": "The bundled Dahua NetSDK does not include Linux arm64/aarch64. Use Home Assistant x86_64 or provide a Dahua arm64 SDK package."
     },
     "abort": {
       "already_configured": "This controller is already configured.",

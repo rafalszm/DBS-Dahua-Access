@@ -19,9 +19,15 @@ Kamery i NVR są poza zakresem pierwszej wersji integracji. Eksperymenty laborat
 
 ## Status
 
-Wersja `0.1.0` jest pierwszym szkieletem integracji. Zawiera strukturę HACS, Config Flow, encje Home Assistant oraz adapter Dahua NetSDK.
+Wersja `0.1.1` jest pierwszą wersją z bundlowanym Dahua NetSDK. Zawiera strukturę HACS, Config Flow, encje Home Assistant oraz adapter Dahua NetSDK.
 
-Przed oznaczeniem jako stabilne wydanie trzeba jeszcze potwierdzić działanie natywnych bibliotek Dahua NetSDK na Home Assistant OS `arm64`.
+W repozytorium są dołączone oficjalne wheel'e Dahua NetSDK dla:
+
+* Linux x86_64,
+* Linux i686,
+* Windows amd64.
+
+W pobranej paczce Dahua nie ma wheel'a Linux `arm64/aarch64`. Na Home Assistant OS uruchomionym na ARM64 integracja pokaże precyzyjny błąd braku NetSDK dla tej architektury, dopóki nie znajdziemy właściwej paczki Dahua ARM64.
 
 ## Instalacja przez HACS
 
@@ -91,6 +97,12 @@ Pliki lokalne i sekrety są ignorowane przez git:
 * `sdk/`
 * `.venv/`
 * `lab_captures/`
+
+Bundlowane wheel'e NetSDK są trzymane w:
+
+```text
+custom_components/dbs_dahua_access/vendor/wheels/
+```
 
 Testy podstawowej normalizacji:
 

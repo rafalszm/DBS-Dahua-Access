@@ -20,6 +20,7 @@ from .normalizer import (
     normalize_open_method_name,
     resolve_door_label,
 )
+from .vendor_loader import ensure_netsdk_available
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -294,10 +295,13 @@ class NetSDKAccessClient:
         if self._sdk is not None:
             return self._sdk
         try:
+            ensure_netsdk_available()
             from NetSDK import SDK_Callback as callbacks
             from NetSDK import SDK_Enum as enums
             from NetSDK import SDK_Struct as structs
             from NetSDK.NetSDK import NetClient
+        except DahuaSdkUnavailable:
+            raise
         except Exception as err:  # pragma: no cover - depends on native SDK install
             raise DahuaSdkUnavailable(
                 "Dahua NetSDK Python bindings are not installed or native libraries cannot be loaded"

@@ -32,6 +32,14 @@ from .dahua import (
 )
 
 
+def _sdk_error_key(err: DahuaSdkUnavailable) -> str:
+    """Map SDK availability errors to UI translation keys."""
+    message = str(err).lower()
+    if "arm64" in message or "aarch64" in message:
+        return "sdk_arm64_unavailable"
+    return "sdk_unavailable"
+
+
 async def _async_validate_input(hass: HomeAssistant, user_input: dict[str, Any]) -> AccessDeviceInfo:
     """Validate controller credentials and return device info."""
     config = AccessControllerConfig(
@@ -72,8 +80,8 @@ class DahuaAccessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 device = await _async_validate_input(self.hass, user_input)
             except DahuaAuthError:
                 errors["base"] = "invalid_auth"
-            except DahuaSdkUnavailable:
-                errors["base"] = "sdk_unavailable"
+            except DahuaSdkUnavailable as err:
+                errors["base"] = _sdk_error_key(err)
             except DahuaConnectionError:
                 errors["base"] = "cannot_connect"
             else:
@@ -112,8 +120,8 @@ class DahuaAccessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 device = await _async_validate_input(self.hass, user_input)
             except DahuaAuthError:
                 errors["base"] = "invalid_auth"
-            except DahuaSdkUnavailable:
-                errors["base"] = "sdk_unavailable"
+            except DahuaSdkUnavailable as err:
+                errors["base"] = _sdk_error_key(err)
             except DahuaConnectionError:
                 errors["base"] = "cannot_connect"
             else:
@@ -153,8 +161,8 @@ class DahuaAccessConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 device = await _async_validate_input(self.hass, user_input)
             except DahuaAuthError:
                 errors["base"] = "invalid_auth"
-            except DahuaSdkUnavailable:
-                errors["base"] = "sdk_unavailable"
+            except DahuaSdkUnavailable as err:
+                errors["base"] = _sdk_error_key(err)
             except DahuaConnectionError:
                 errors["base"] = "cannot_connect"
             else:
