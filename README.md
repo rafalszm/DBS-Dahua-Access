@@ -19,7 +19,7 @@ Kamery i NVR są poza zakresem pierwszej wersji integracji. Eksperymenty laborat
 
 ## Status
 
-Wersja `0.1.3` pobiera nazwy kontrolera i przejść z SDK, a fallbacki stosuje dopiero wtedy, gdy kontroler nie odda nazw znanymi metodami.
+Wersja `0.1.4` pobiera nazwę, rzeczywisty model i wersje urządzenia z właściwych zapytań SDK. Kod klasy urządzenia `56` jest rozpoznawany zgodnie z SDK jako seria kontroli dostępu, a nie DVR. Integracja nie tworzy przejść na podstawie stałej wartości zastępczej, zachowuje mapowanie widocznych drzwi `1..N` na kanały SDK `0..N-1` i wczytuje karty oraz użytkowników do natywnych tagów Home Assistanta.
 
 W repozytorium są dołączone oficjalne wheel'e Dahua NetSDK dla:
 
@@ -60,7 +60,11 @@ Integracja po połączeniu próbuje pobrać:
 * dostępne drzwi lub przejścia,
 * nazwy drzwi z konfiguracji albo z eventów kontrolera.
 
-Integracja pyta kontroler o liczbę i nazwy przejść przez `GETSUBCONTROLLER_INFO`, a jeśli urządzenie tego nie obsługuje, próbuje odczytać liczbę z `AccessControlGeneral`. Nazwa kontrolera pochodzi z konfiguracji `General.MachineName`, jeśli kontroler ją odda. Lab pokazał, że samo sondowanie kolejnych kanałów `AccessControl` może zwracać fałszywe pozytywy, dlatego nie tworzymy już encji `Przejście 5+` tylko dlatego, że SDK przyjęło zapytanie konfiguracyjne.
+Integracja pyta kontroler o liczbę i nazwy przejść przez `GETSUBCONTROLLER_INFO`, a jeśli urządzenie tego nie obsługuje, próbuje jawnej liczby z `AccessControlGeneral`. Dla starszych kontrolerów weryfikuje kolejne kanały `AccessControl`, ale uznaje kanał wyłącznie wtedy, gdy odpowiedź ma `result=true` i zwraca dokładnie ten sam numer kanału. Nie używa listy blokady `ABLock` jako liczby drzwi i nie tworzy encji na podstawie stałej wartości. Nazwa kontrolera pochodzi wyłącznie z `General.MachineName`, jeśli kontroler ją odda.
+
+Kanały NetSDK są numerowane od zera. Integracja pokazuje użytkownikowi przejścia od `1`, ale komendy otwarcia wysyła na odpowiadający im kanał SDK od `0`, więc kolejność przycisków jest zgodna z kolejnością kontrolera. Nazwy drzwi pochodzą z `GETSUBCONTROLLER_INFO`, konfiguracji `AccessControl` albo z `szDoorName` w evencie. Jeżeli dany firmware nie zwraca nazwy żadną z tych metod, pozostaje neutralne `Przejście <nr>`.
+
+Karty są pobierane z rejestru `ACCESSCTLCARD`, wiązane z użytkownikami przez natywne usługi kart i użytkowników, a następnie dodawane do rejestru tagów HA jako `dahua:<numer_karty>`. Nazwa tagu jest nazwą użytkownika, nazwą karty albo identyfikatorem użytkownika, zależnie od danych faktycznie zapisanych w kontrolerze. Zwykły wspólny PIN (`PWD_ONLY`) nie wskazuje użytkownika; PIN osobisty lub tryb `UserID+PIN` jest przypisywany, gdy event zawiera `szUserID`.
 
 ## Eventy Home Assistant
 

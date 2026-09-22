@@ -26,6 +26,7 @@ class AccessDeviceInfo:
     model: str = ""
     manufacturer: str = "Dahua"
     firmware: str = ""
+    hardware: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -35,7 +36,8 @@ class AccessDoor:
 
     door_id: int
     label: str
-    source: str = "fallback"
+    sdk_channel: int
+    source: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +48,16 @@ class AccessUser:
     name: str = ""
     status: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AccessCard:
+    """One card credential stored by the access controller."""
+
+    card_number: str
+    user_id: str = ""
+    name: str = ""
+    status: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,4 +89,8 @@ class AccessEvent:
     @property
     def person_label(self) -> str:
         """Return a human-readable person label."""
-        return self.user_name or self.card_name or (f"ID {self.user_id}" if self.user_id else "")
+        if self.user_name or self.card_name or self.user_id:
+            return self.user_name or self.card_name or f"ID {self.user_id}"
+        if self.method == "pin":
+            return "PIN kontrolera"
+        return ""

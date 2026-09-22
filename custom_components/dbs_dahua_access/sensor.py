@@ -30,6 +30,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 lambda event: event.door_label or (str(event.door_id) if event.door_id else ""),
             ),
             DahuaLastEventSensor(runtime, entry, "Last Result", "last_result", lambda event: event.result),
+            DahuaIdentityCountSensor(runtime, entry, "Known Users", "known_users", "users_by_id"),
+            DahuaIdentityCountSensor(runtime, entry, "Known Tags", "known_tags", "cards_by_number"),
         ]
     )
 
@@ -75,3 +77,19 @@ class DahuaLastEventSensor(DahuaAccessEntity, SensorEntity):
             "device_time": event.device_time,
             "error": event.error_code,
         }
+
+
+class DahuaIdentityCountSensor(DahuaAccessEntity, SensorEntity):
+    """Expose the number of users or card tags loaded from the controller."""
+
+    _attr_native_unit_of_measurement = "entries"
+
+    def __init__(self, runtime, entry, name_suffix: str, key: str, collection_name: str) -> None:
+        super().__init__(runtime, entry)
+        self._collection_name = collection_name
+        self._attr_name = f"{runtime.device_info.name} · {name_suffix}"
+        self._attr_unique_id = f"{runtime.device_info.serial}_{key}"
+
+    @property
+    def native_value(self) -> int:
+        return len(getattr(self.runtime, self._collection_name))

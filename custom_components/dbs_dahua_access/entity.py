@@ -57,6 +57,7 @@ class DahuaDoorEntity(DahuaAccessEntity):
             "controller": self.runtime.device_info.name,
             "controller_serial": self.runtime.device_info.serial,
             "door": self.door_id,
+            "sdk_channel": self.runtime.doors.get(self.door_id).sdk_channel if self.door_id in self.runtime.doors else None,
             "door_label": self.runtime.doors.get(self.door_id).label if self.door_id in self.runtime.doors else "",
         }
 

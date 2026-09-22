@@ -7,8 +7,6 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 DOMAIN = "dbs_dahua_access"
 
 DEFAULT_PORT = 37777
-DEFAULT_SCAN_DOORS = 4
-MAX_SCAN_DOORS = 32
 
 CONF_SERIAL = "serial"
 CONF_DEVICE_NAME = "device_name"

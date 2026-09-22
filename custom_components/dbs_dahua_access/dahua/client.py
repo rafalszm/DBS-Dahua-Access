@@ -7,18 +7,21 @@ import json
 import logging
 import threading
 from collections.abc import Callable
-from ctypes import POINTER, c_char, c_char_p, c_int, c_long, cast, create_string_buffer, sizeof
+from ctypes import POINTER, c_char, c_char_p, c_int, c_long, c_void_p, cast, create_string_buffer, pointer, sizeof
 from typing import Any, Protocol
 
 from .exceptions import DahuaAuthError, DahuaConnectionError, DahuaSdkUnavailable
-from .models import AccessControllerConfig, AccessDeviceInfo, AccessDoor, AccessEvent, AccessUser
+from .models import AccessCard, AccessControllerConfig, AccessDeviceInfo, AccessDoor, AccessEvent, AccessUser
 from .normalizer import (
+    door_id_to_sdk_channel,
     enum_name,
     normalize_access_result,
     normalize_door_status_name,
     normalize_event_type_name,
     normalize_open_method_name,
     resolve_door_label,
+    sdk_channel_to_door_id,
+    sdk_device_class_name,
 )
 from .vendor_loader import ensure_netsdk_available
 
@@ -48,11 +51,20 @@ class DahuaAccessClient(Protocol):
     def stop_listening(self) -> None:
         """Stop push-event listening."""
 
-    def open_door(self, door_id: int, direction: str = "unknown") -> None:
-        """Send a remote open command."""
+    def open_door(self, sdk_channel: int, direction: str = "unknown") -> None:
+        """Send a remote open command to a zero-based SDK channel."""
 
     def get_user(self, user_id: str) -> AccessUser | None:
         """Fetch a user by access-control user id."""
+
+    def get_users(self, user_ids: list[str]) -> list[AccessUser]:
+        """Fetch access-control users in one SDK request."""
+
+    def list_cards(self) -> list[AccessCard]:
+        """Return card credentials known by the controller."""
+
+    def get_user_by_card(self, card_number: str) -> AccessUser | None:
+        """Resolve a controller user from a card number."""
 
 
 def _decode_bytes(value: Any) -> str:
@@ -98,6 +110,7 @@ class NetSDKAccessClient:
         self._sdk_modules: dict[str, Any] | None = None
         self._sdk: Any = None
         self._message_callback: Any = None
+        self._door_config_cache: dict[int, bytes] = {}
 
     def connect(self) -> AccessDeviceInfo:
         """Connect to the controller and return device metadata."""
@@ -150,19 +163,21 @@ class NetSDKAccessClient:
 
         door_count, count_source = self._discover_door_count()
         if door_count is None:
-            door_count = 4
-            count_source = "fallback"
+            _LOGGER.warning(
+                "Dahua controller %s did not report an authoritative door count; no door entities will be created",
+                self.config.host,
+            )
+            return []
 
         doors = []
         for door_id in range(1, max(1, min(door_count, 64)) + 1):
-            channel = door_id - 1
-            buffer = create_string_buffer(512 * 1024)
-            error = c_int(0)
-            ok = bool(self._sdk.GetNewDevConfig(self._login_id, "AccessControl", channel, buffer, len(buffer), error, 3000))
-            raw = bytes(buffer).split(b"\x00", 1)[0]
+            channel = door_id_to_sdk_channel(door_id)
+            raw = self._door_config_cache.get(channel)
+            if raw is None:
+                raw = self._get_new_config("AccessControl", channel)
             label = self._label_from_access_control_config(raw) or resolve_door_label(door_id)
             source = "config" if raw else count_source
-            doors.append(AccessDoor(door_id=door_id, label=label, source=source))
+            doors.append(AccessDoor(door_id=door_id, label=label, sdk_channel=channel, source=source))
         return doors
 
     def _discover_door_count(self) -> tuple[int | None, str]:
@@ -173,6 +188,9 @@ class NetSDKAccessClient:
         count = self._door_count_from_access_control_general()
         if count:
             return count, "access_control_general"
+        count = self._door_count_from_access_control_channels()
+        if count:
+            return count, "access_control_channels"
         return None, "unknown"
 
     def _doors_from_subcontrollers(self) -> list[AccessDoor]:
@@ -188,11 +206,17 @@ class NetSDKAccessClient:
             item_reader_doors: list[int] = []
             for reader_index in range(min(max(door_count, 0), 128)):
                 reader = item.stuReaderInfo[reader_index]
-                door_id = int(getattr(reader, "nDoor", 0)) or next_door_id
-                if not 0 < door_id <= 64:
+                sdk_channel = int(getattr(reader, "nDoor", -1))
+                if not 0 <= sdk_channel < 64:
                     continue
+                door_id = sdk_channel_to_door_id(sdk_channel)
                 label = self._door_label_from_subcontroller(subcontroller_name, door_id, door_count)
-                doors[door_id] = AccessDoor(door_id=door_id, label=label, source="subcontroller_info")
+                doors[door_id] = AccessDoor(
+                    door_id=door_id,
+                    label=label,
+                    sdk_channel=sdk_channel,
+                    source="subcontroller_info",
+                )
                 item_reader_doors.append(door_id)
                 next_door_id = max(next_door_id, door_id + 1)
 
@@ -200,7 +224,12 @@ class NetSDKAccessClient:
                 start = next_door_id
                 for door_id in range(start, min(start + door_count, 65)):
                     label = self._door_label_from_subcontroller(subcontroller_name, door_id, door_count)
-                    doors[door_id] = AccessDoor(door_id=door_id, label=label, source="subcontroller_info")
+                    doors[door_id] = AccessDoor(
+                        door_id=door_id,
+                        label=label,
+                        sdk_channel=door_id_to_sdk_channel(door_id),
+                        source="subcontroller_info",
+                    )
                     next_door_id = max(next_door_id, door_id + 1)
 
         return [doors[door_id] for door_id in sorted(doors)]
@@ -257,7 +286,7 @@ class NetSDKAccessClient:
                     reader_door_ids.append(door_id)
 
         if reader_door_ids:
-            return max(reader_door_ids)
+            return max(reader_door_ids) + 1
         if len(explicit_counts) == 1:
             return explicit_counts[0]
         if explicit_counts:
@@ -295,6 +324,57 @@ class NetSDKAccessClient:
             if count:
                 return count
         return None
+
+    def _door_count_from_access_control_channels(self) -> int | None:
+        """Count only channels explicitly accepted and echoed by the controller."""
+        count = 0
+        self._door_config_cache.clear()
+        for channel in range(64):
+            raw = self._get_new_config("AccessControl", channel)
+            if not self._config_confirms_channel(raw, channel):
+                break
+            self._door_config_cache[channel] = raw
+            count += 1
+        return count or None
+
+    def _get_new_config(self, command: str, channel: int) -> bytes:
+        buffer = create_string_buffer(512 * 1024)
+        error = c_int(0)
+        try:
+            ok = bool(
+                self._sdk.GetNewDevConfig(
+                    self._login_id,
+                    command,
+                    channel,
+                    buffer,
+                    len(buffer),
+                    error,
+                    3000,
+                )
+            )
+        except Exception:
+            return b""
+        raw = bytes(buffer).split(b"\x00", 1)[0]
+        return raw if ok else b""
+
+    @staticmethod
+    def _config_confirms_channel(raw: bytes, requested_channel: int) -> bool:
+        if not raw:
+            return False
+        try:
+            parsed = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(parsed, dict) or parsed.get("result") is not True:
+            return False
+        params = parsed.get("params")
+        if not isinstance(params, dict):
+            return False
+        try:
+            returned_channel = int(params.get("channel"))
+        except (TypeError, ValueError):
+            return False
+        return returned_channel == requested_channel
 
     def start_listening(self, callback: EventCallback) -> None:
         """Start push-event listening."""
@@ -352,8 +432,8 @@ class NetSDKAccessClient:
                 self._sdk.StopListen(self._login_id)
             self._listening = False
 
-    def open_door(self, door_id: int, direction: str = "unknown") -> None:
-        """Send a remote open command."""
+    def open_door(self, sdk_channel: int, direction: str = "unknown") -> None:
+        """Send a remote open command to a zero-based SDK channel."""
         with self._lock:
             self.connect()
             structs = self._sdk_modules["structs"]
@@ -361,7 +441,7 @@ class NetSDKAccessClient:
 
             param = structs.NET_CTRL_ACCESS_OPEN()
             param.dwSize = sizeof(structs.NET_CTRL_ACCESS_OPEN)
-            param.nChannelID = int(door_id)
+            param.nChannelID = int(sdk_channel)
             param.emOpenDoorType = enums.EM_OPEN_DOOR_TYPE.EM_OPEN_DOOR_TYPE_REMOTE
             param.emOpenDoorDirection = {
                 "enter": enums.EM_OPEN_DOOR_DIRECTION.EM_OPEN_DOOR_DIRECTION_FROM_ENTER,
@@ -375,9 +455,14 @@ class NetSDKAccessClient:
 
     def get_user(self, user_id: str) -> AccessUser | None:
         """Fetch a user name from the controller by user id."""
-        user_id = str(user_id).strip()
-        if not user_id:
-            return None
+        users = self.get_users([user_id])
+        return users[0] if users else None
+
+    def get_users(self, user_ids: list[str]) -> list[AccessUser]:
+        """Fetch up to 100 users in one native SDK request."""
+        clean_ids = [value for value in dict.fromkeys(str(item).strip() for item in user_ids) if value][:100]
+        if not clean_ids:
+            return []
         with self._lock:
             self.connect()
             structs = self._sdk_modules["structs"]
@@ -385,17 +470,19 @@ class NetSDKAccessClient:
 
             in_param = structs.NET_IN_ACCESS_USER_SERVICE_GET()
             in_param.dwSize = sizeof(structs.NET_IN_ACCESS_USER_SERVICE_GET)
-            in_param.nUserNum = 1
+            in_param.nUserNum = len(clean_ids)
             packed_user_ids = bytearray(3200)
-            encoded = user_id.encode("utf-8")[:31]
-            packed_user_ids[: len(encoded)] = encoded
+            for index, user_id in enumerate(clean_ids):
+                encoded = user_id.encode("utf-8")[:31]
+                offset = index * 32
+                packed_user_ids[offset : offset + len(encoded)] = encoded
             in_param.szUserID = bytes(packed_user_ids)
 
-            users = (structs.NET_ACCESS_USER_INFO * 1)()
-            fail_codes = (structs.C_ENUM * 1)()
+            users = (structs.NET_ACCESS_USER_INFO * len(clean_ids))()
+            fail_codes = (structs.C_ENUM * len(clean_ids))()
             out_param = structs.NET_OUT_ACCESS_USER_SERVICE_GET()
             out_param.dwSize = sizeof(structs.NET_OUT_ACCESS_USER_SERVICE_GET)
-            out_param.nMaxRetNum = 1
+            out_param.nMaxRetNum = len(clean_ids)
             out_param.pUserInfo = users
             out_param.pFailCode = fail_codes
 
@@ -407,19 +494,158 @@ class NetSDKAccessClient:
                 5000,
             )
             if not result:
-                _LOGGER.debug("Dahua user lookup failed for %s: %s", user_id, self._sdk.GetLastErrorMessage())
-                return None
+                _LOGGER.debug("Dahua user lookup failed: %s", self._sdk.GetLastErrorMessage())
+                if len(clean_ids) > 1:
+                    resolved_one_by_one: list[AccessUser] = []
+                    for user_id in clean_ids:
+                        resolved_one_by_one.extend(self.get_users([user_id]))
+                    return resolved_one_by_one
+                return []
 
-            info = users[0]
-            resolved_id = _decode_bytes(info.szUserID) or user_id
-            name = _decode_bytes(info.szNameEx) if bool(info.bUseNameEx) else ""
-            name = name or _decode_bytes(info.szName)
-            return AccessUser(
-                user_id=resolved_id,
-                name=name,
-                status=int(info.nUserStatus),
-                raw={"fail_code": int(fail_codes[0])},
+            resolved: list[AccessUser] = []
+            for index, requested_id in enumerate(clean_ids):
+                info = users[index]
+                resolved_id = _decode_bytes(info.szUserID) or requested_id
+                name = _decode_bytes(info.szNameEx) if bool(info.bUseNameEx) else ""
+                name = name or _decode_bytes(info.szName)
+                fail_code = int(fail_codes[index])
+                if not name and not _decode_bytes(info.szUserID) and fail_code:
+                    continue
+                resolved.append(
+                    AccessUser(
+                        user_id=resolved_id,
+                        name=name,
+                        status=int(info.nUserStatus),
+                        raw={"fail_code": fail_code},
+                    )
+                )
+            return resolved
+
+    def list_cards(self) -> list[AccessCard]:
+        """Enumerate access cards, then enrich their user IDs via the card service."""
+        with self._lock:
+            self.connect()
+            structs = self._sdk_modules["structs"]
+            enums = self._sdk_modules["enums"]
+
+            condition = structs.NET_A_FIND_RECORD_ACCESSCTLCARD_CONDITION()
+            condition.dwSize = sizeof(condition)
+            in_find = structs.NET_IN_FIND_RECORD_PARAM()
+            in_find.dwSize = sizeof(in_find)
+            in_find.emType = enums.EM_NET_RECORD_TYPE.ACCESSCTLCARD
+            in_find.pQueryCondition = cast(pointer(condition), c_void_p)
+            out_find = structs.NET_OUT_FIND_RECORD_PARAM()
+            out_find.dwSize = sizeof(out_find)
+
+            if not self._sdk.FindRecord(self._login_id, in_find, out_find, 5000):
+                _LOGGER.debug("Dahua card enumeration is unavailable: %s", self._sdk.GetLastErrorMessage())
+                return []
+
+            cards: dict[str, AccessCard] = {}
+            handle = out_find.lFindeHandle
+            try:
+                batch_size = 16
+                while len(cards) < 2000:
+                    records = (structs.NET_RECORDSET_ACCESS_CTL_CARD * batch_size)()
+                    for record in records:
+                        record.dwSize = sizeof(structs.NET_RECORDSET_ACCESS_CTL_CARD)
+                    in_next = structs.NET_IN_FIND_NEXT_RECORD_PARAM()
+                    in_next.dwSize = sizeof(in_next)
+                    in_next.lFindeHandle = handle
+                    in_next.nFileCount = batch_size
+                    out_next = structs.NET_OUT_FIND_NEXT_RECORD_PARAM()
+                    out_next.dwSize = sizeof(out_next)
+                    out_next.pRecordList = cast(records, c_void_p)
+                    out_next.nMaxRecordNum = batch_size
+                    if not self._sdk.FindNextRecord(in_next, out_next, 5000):
+                        break
+                    returned = max(0, min(int(out_next.nRetRecordNum), batch_size))
+                    for index in range(returned):
+                        record = records[index]
+                        card_number = _decode_bytes(record.szCardNo)
+                        if not card_number:
+                            continue
+                        cards[card_number] = AccessCard(
+                            card_number=card_number,
+                            user_id=_decode_bytes(record.szUserID),
+                            name=_decode_bytes(record.szCardName),
+                            status=int(record.emStatus),
+                        )
+                    if returned < batch_size:
+                        break
+            finally:
+                self._sdk.FindRecordClose(handle)
+
+            card_numbers = list(cards)
+            for offset in range(0, len(card_numbers), 100):
+                for binding in self._get_cards_by_number(card_numbers[offset : offset + 100]):
+                    previous = cards.get(binding.card_number)
+                    cards[binding.card_number] = AccessCard(
+                        card_number=binding.card_number,
+                        user_id=binding.user_id or (previous.user_id if previous else ""),
+                        name=previous.name if previous else "",
+                        status=binding.status if binding.status is not None else (previous.status if previous else None),
+                    )
+            return list(cards.values())
+
+    def get_user_by_card(self, card_number: str) -> AccessUser | None:
+        """Resolve a user through the native card service."""
+        bindings = self._get_cards_by_number([card_number])
+        if not bindings or not bindings[0].user_id:
+            return None
+        return self.get_user(bindings[0].user_id)
+
+    def _get_cards_by_number(self, card_numbers: list[str]) -> list[AccessCard]:
+        clean_numbers = [value for value in dict.fromkeys(str(item).strip() for item in card_numbers) if value][:100]
+        if not clean_numbers:
+            return []
+        with self._lock:
+            self.connect()
+            structs = self._sdk_modules["structs"]
+            enums = self._sdk_modules["enums"]
+            in_param = structs.NET_IN_ACCESS_CARD_SERVICE_GET()
+            in_param.dwSize = sizeof(in_param)
+            in_param.nCardNum = len(clean_numbers)
+            packed_card_numbers = bytearray(3200)
+            for index, card_number in enumerate(clean_numbers):
+                encoded = card_number.encode("utf-8")[:31]
+                offset = index * 32
+                packed_card_numbers[offset : offset + len(encoded)] = encoded
+            in_param.szCardNo = bytes(packed_card_numbers)
+
+            card_info = (structs.NET_ACCESS_CARD_INFO * len(clean_numbers))()
+            fail_codes = (structs.C_ENUM * len(clean_numbers))()
+            out_param = structs.NET_OUT_ACCESS_CARD_SERVICE_GET()
+            out_param.dwSize = sizeof(out_param)
+            out_param.nMaxRetNum = len(clean_numbers)
+            out_param.pCardInfo = card_info
+            out_param.pFailCode = fail_codes
+            result = self._sdk.OperateAccessCardService(
+                self._login_id,
+                enums.EM_A_NET_EM_ACCESS_CTL_CARD_SERVICE.NET_EM_ACCESS_CTL_CARD_SERVICE_GET,
+                in_param,
+                out_param,
+                5000,
             )
+            if not result:
+                return []
+
+            bindings: list[AccessCard] = []
+            for index, requested_number in enumerate(clean_numbers):
+                info = card_info[index]
+                card_number = _decode_bytes(info.szCardNo) or requested_number
+                user_id = _decode_bytes(info.szUserIDEx) if bool(info.bUserIDEx) else ""
+                user_id = user_id or _decode_bytes(info.szUserID)
+                if not user_id and int(fail_codes[index]):
+                    continue
+                bindings.append(
+                    AccessCard(
+                        card_number=card_number,
+                        user_id=user_id,
+                        status=int(info.nCardStatus),
+                    )
+                )
+            return bindings
 
     def _ensure_sdk(self) -> Any:
         if self._sdk is not None:
@@ -450,26 +676,78 @@ class NetSDKAccessClient:
                 value = getattr(raw_info, field)
                 raw[field] = _decode_bytes(value) if field.startswith("s") else int(value)
         serial = str(raw.get("sSerialNumber") or self.config.host)
-        model = f"Dahua DVR type {raw['nDVRType']}" if raw.get("nDVRType") is not None else ""
+        metadata = self._probe_software_info()
+        device_class = sdk_device_class_name(raw.get("nDVRType"))
+        raw["sdk_device_class"] = device_class
+        raw.update({key: value for key, value in metadata.items() if value})
+        model = metadata.get("detail_type") or metadata.get("device_type") or device_class
         name = self._probe_device_name() or self.name_hint
-        return AccessDeviceInfo(serial=serial, name=name, model=model, raw=raw)
+        return AccessDeviceInfo(
+            serial=serial,
+            name=name,
+            model=model,
+            firmware=metadata.get("firmware", ""),
+            hardware=metadata.get("hardware", ""),
+            raw=raw,
+        )
+
+    def _probe_software_info(self) -> dict[str, str]:
+        """Read real product and version metadata through the SDK state query."""
+        structs = self._sdk_modules["structs"]
+        enums = self._sdk_modules["enums"]
+        if not hasattr(structs, "NET_A_DEV_VERSION_INFO"):
+            return {}
+
+        info = structs.NET_A_DEV_VERSION_INFO()
+        try:
+            ok = bool(
+                self._sdk.QueryDevState(
+                    self._login_id,
+                    enums.EM_QUERY_DEV_STATE_TYPE.SOFTWARE,
+                    info,
+                    sizeof(info),
+                    0,
+                    5000,
+                )
+            )
+        except Exception:
+            _LOGGER.debug("Dahua software metadata query failed", exc_info=True)
+            return {}
+        if not ok:
+            return {}
+
+        return {
+            "device_type": _decode_bytes(info.szDevType),
+            "detail_type": _decode_bytes(info.szDetailType),
+            "firmware": _decode_bytes(info.szSoftWareVersion),
+            "hardware": _decode_bytes(info.szHardwareVersion),
+        }
 
     def _probe_device_name(self) -> str:
         """Try to read the controller name from Dahua config."""
-        for command in ("General", "DeviceInfo", "SystemInfo"):
-            for channel in (-1, 0):
-                buffer = create_string_buffer(512 * 1024)
-                error = c_int(0)
-                try:
-                    ok = bool(self._sdk.GetNewDevConfig(self._login_id, command, channel, buffer, len(buffer), error, 3000))
-                except Exception:
-                    ok = False
-                raw = bytes(buffer).split(b"\x00", 1)[0]
-                if not ok and not raw:
-                    continue
-                name = self._name_from_config(raw)
-                if name:
-                    return name
+        for channel in (-1, 0):
+            buffer = create_string_buffer(512 * 1024)
+            error = c_int(0)
+            try:
+                ok = bool(
+                    self._sdk.GetNewDevConfig(
+                        self._login_id,
+                        "General",
+                        channel,
+                        buffer,
+                        len(buffer),
+                        error,
+                        3000,
+                    )
+                )
+            except Exception:
+                ok = False
+            raw = bytes(buffer).split(b"\x00", 1)[0]
+            if not ok and not raw:
+                continue
+            name = self._name_from_config(raw)
+            if name:
+                return name
         return ""
 
     def _handle_message(self, l_command: Any, l_login_id: Any, p_buf: Any, dw_buf_len: Any, n_event_id: Any) -> None:
@@ -484,10 +762,11 @@ class NetSDKAccessClient:
         try:
             if command == int(enums.SDK_ALARM_TYPE.ALARM_ACCESS_CTL_EVENT):
                 info = cast(p_buf, POINTER(structs.NET_A_ALARM_ACCESS_CTL_EVENT_INFO)).contents
+                sdk_channel = int(info.nDoor)
                 event = AccessEvent(
                     kind="access_event",
                     result=normalize_access_result(info.bStatus, info.nErrorCode),
-                    door_id=int(info.nDoor),
+                    door_id=sdk_channel_to_door_id(sdk_channel),
                     door_name=_decode_bytes(info.szDoorName) if hasattr(info, "szDoorName") else "",
                     reader_id=_decode_bytes(info.szReaderID),
                     method=normalize_open_method_name(enum_name(enums.EM_A_NET_ACCESS_DOOROPEN_METHOD, info.emOpenMethod)),
@@ -498,16 +777,23 @@ class NetSDKAccessClient:
                     device_time=_sdk_time_to_string(info.stuTime),
                     raw_event_type=int(info.emEventType),
                     raw_status=int(info.bStatus),
-                    raw={"event_type": normalize_event_type_name(enum_name(enums.EM_A_NET_ACCESS_CTL_EVENT_TYPE, info.emEventType))},
+                    raw={
+                        "event_type": normalize_event_type_name(
+                            enum_name(enums.EM_A_NET_ACCESS_CTL_EVENT_TYPE, info.emEventType)
+                        ),
+                        "sdk_channel": sdk_channel,
+                        "pin_present": bool(_decode_bytes(info.szPwd)),
+                    },
                 )
                 self._callback(event)
                 return
 
             if command == int(enums.SDK_ALARM_TYPE.ALARM_ACCESS_CTL_STATUS):
                 info = cast(p_buf, POINTER(structs.NET_A_ALARM_ACCESS_CTL_STATUS_INFO)).contents
+                sdk_channel = int(info.nDoor)
                 event = AccessEvent(
                     kind="access_status",
-                    door_id=int(info.nDoor),
+                    door_id=sdk_channel_to_door_id(sdk_channel),
                     device_time=_sdk_time_to_string(info.stuTime),
                     raw_status=int(info.emStatus),
                     raw={
@@ -515,6 +801,7 @@ class NetSDKAccessClient:
                             enum_name(enums.EM_A_NET_ACCESS_CTL_STATUS_TYPE, info.emStatus)
                         ),
                         "serial": _decode_bytes(info.szSerialNumber),
+                        "sdk_channel": sdk_channel,
                     },
                 )
                 self._callback(event)
@@ -561,6 +848,7 @@ class NetSDKAccessClient:
                     continue
                 if 0 < count <= 64:
                     return count
+
         return None
 
     @staticmethod
@@ -573,7 +861,7 @@ class NetSDKAccessClient:
             return ""
         for key, value in _walk_text_values(parsed):
             key_lower = key.lower()
-            if value and key_lower in {"machinename", "devicename", "hostname", "name", "szmachinename"}:
+            if value and key_lower in {"machinename", "szmachinename"}:
                 return value
         return ""
 

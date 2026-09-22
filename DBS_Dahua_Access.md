@@ -1383,7 +1383,7 @@ Decyzje zaimplementowane w pierwszym scaffoldingowym przebiegu:
 - jeden `Config Entry` = jeden kontroler,
 - `Device` HA identyfikowane po numerze seryjnym kontrolera,
 - nazwa kontrolera jest pobierana z konfiguracji Dahua, jeśli SDK ją zwróci; fallbackiem jest host,
-- drzwi są wykrywane przez `GetNewDevConfig("AccessControl", channel)`; fallback to 4 przejścia,
+- drzwi są wykrywane przez metody SDK, a dla starszego `ASC2204B-S` kanał jest uznawany tylko wtedy, gdy odpowiedź `AccessControl` ma `result=true` i zwraca dokładnie żądany numer kanału,
 - nazwa drzwi z eventu SDK ma pierwszeństwo przed nazwą fallbackową,
 - numer drzwi zostaje atrybutem technicznym,
 - eventy z `user_id` są wzbogacane nazwą użytkownika przez `OperateAccessUserService`,
@@ -1422,7 +1422,7 @@ W `0.1.2` wykrywanie zostało zmienione tak, aby najpierw pytać kontroler o lic
 - jeżeli kontroler nie wspiera tej metody, integracja próbuje odczytać liczbę z `AccessControlGeneral`,
 - kanały `AccessControl` są używane tylko do wzbogacenia nazw dla już ustalonej liczby drzwi,
 - encje `Przejście 5+` zostają usunięte z rejestru encji, jeśli powstały po wcześniejszej wersji integracji,
-- jeżeli kontroler nie odda liczby przejść żadną znaną metodą, integracja używa fallbacku technicznego i nie traktuje go jako wykrycia po typie urządzenia.
+- jeżeli kontroler nie odda liczby przejść żadną potwierdzoną metodą, integracja nie tworzy encji drzwi zamiast zgadywać ich liczbę.
 
 ### 24.3. Nazwy kontrolera i przejść z SDK
 
@@ -1433,3 +1433,32 @@ W `0.1.3` poprawiono priorytety zgodnie z labem:
 - nazwy przejść są pobierane z `GETSUBCONTROLLER_INFO`, jeżeli metoda jest wspierana,
 - `szDoorName` z eventu dostępu dalej ma pierwszeństwo jako najdokładniejsza nazwa przejścia dla danego zdarzenia,
 - fallback `Przejście <nr>` jest używany dopiero, gdy SDK nie odda nazwy.
+
+### 24.4. Rzeczywisty model urządzenia i walidacja kanałów
+
+Kod `NET_DEVICEINFO_Ex.nDVRType=56` nie oznacza rejestratora. W enumie SDK jest to `NET_BSC_SERIAL`, opisane przez Dahua jako seria produktów kontroli dostępu. Nie wolno budować z tego wartości `Dahua DVR type 56`.
+
+Potwierdzona metoda odczytu danych produktu:
+
+```text
+QueryDevState(EM_QUERY_DEV_STATE_TYPE.SOFTWARE)
+NET_A_DEV_VERSION_INFO.szDevType
+NET_A_DEV_VERSION_INFO.szDetailType
+NET_A_DEV_VERSION_INFO.szSoftWareVersion
+NET_A_DEV_VERSION_INFO.szHardwareVersion
+```
+
+Wynik na kontrolerze laboratoryjnym:
+
+```text
+model: DHI-ASC2204B-S
+firmware: 2.000.0000000.8.R
+hardware: RTL8201
+SDK class: NET_BSC_SERIAL / kontroler dostępu
+```
+
+Ten sam kontroler potwierdził `AccessControl` dla kanałów `0..3` i odrzucił kanał `4`. Produkcyjna integracja liczy więc cztery drzwi na podstawie odpowiedzi urządzenia. Samo `ok=True` nie wystarcza: odpowiedź JSON musi dodatkowo zawierać `result=true` oraz `params.channel` równy kanałowi, o który zapytano. `AccessControlGeneral.ABLock.Doors` opisuje grupę blokady, więc nie może być używane jako liczba wszystkich drzwi.
+
+Numery widoczne w Home Assistant są celowo przesunięte o jeden względem SDK: `Przejście 1` ma `sdk_channel=0`, a `Przejście 4` ma `sdk_channel=3`. `NET_CTRL_ACCESS_OPEN.nChannelID` jest według SDK numerowany od zera. Eventy `nDoor`, konfiguracja i komendy są normalizowane przez tę samą parę konwersji, aby nazwa, stan i przycisk zawsze dotyczyły tego samego fizycznego przejścia.
+
+Kontroler laboratoryjny zwrócił trzy karty z przypisaniami do użytkowników `1`, `8` i `2`. Pola nazw osób i kart na tym egzemplarzu są puste, dlatego integracja używa dla nich etykiet `ID <user_id>` zamiast tworzyć nazwę. Gdy `NET_ACCESS_USER_INFO.szName` lub `szNameEx` jest wypełnione, ta nazwa trafia do natywnego rejestru tagów Home Assistant. Wspólny PIN metody `PWD_ONLY` nie jest tożsamością użytkownika; przypisanie osoby jest możliwe dla PIN-u osobistego lub `UserID+PIN`, jeżeli kontroler umieści `szUserID` w evencie.

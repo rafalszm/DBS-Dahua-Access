@@ -28,6 +28,8 @@ def normalize_open_method_name(raw_name: str) -> str:
     return {
         "card": "card",
         "pwd_only": "pin",
+        "custom_password": "personal_pin",
+        "userid_and_pwd": "user_id_pin",
         "remote": "remote",
         "button": "button",
         "fingerprint": "fingerprint",
@@ -70,6 +72,19 @@ def resolve_door_label(door_id: int, event_name: str = "", stored_name: str = ""
     return event_name.strip() or stored_name.strip() or f"Przejście {door_id}"
 
 
+def sdk_channel_to_door_id(sdk_channel: int) -> int:
+    """Convert a zero-based Dahua SDK channel to a one-based UI door number."""
+    return int(sdk_channel) + 1
+
+
+def door_id_to_sdk_channel(door_id: int) -> int:
+    """Convert a one-based UI door number to a zero-based Dahua SDK channel."""
+    door_id = int(door_id)
+    if door_id < 1:
+        raise ValueError("door_id must be at least 1")
+    return door_id - 1
+
+
 def controller_entity_name(controller_name: str, door_label: str) -> str:
     """Build the HA-facing controller + door entity prefix."""
     return f"{controller_name} · {door_label}"
@@ -78,6 +93,13 @@ def controller_entity_name(controller_name: str, door_label: str) -> str:
 def tag_id_for_card(card_number: str) -> str:
     """Build a namespaced Home Assistant tag id from a Dahua card number."""
     return f"dahua:{card_number.strip()}"
+
+
+def sdk_device_class_name(device_type: int | None) -> str:
+    """Return a label only for SDK device classes identified exactly."""
+    if device_type == 56:  # NET_BSC_SERIAL: Access control series of products
+        return "Kontroler dostępu"
+    return ""
 
 
 def mask_card_number(card_number: str) -> str:

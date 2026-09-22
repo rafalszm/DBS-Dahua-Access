@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from NetSDK.NetSDK import NetClient
-from NetSDK.SDK_Enum import EM_A_NET_EM_ACCESS_CTL_MANAGER, EM_LOGIN_SPAC_CAP_TYPE
+from NetSDK.SDK_Enum import EM_A_NET_EM_ACCESS_CTL_MANAGER, EM_LOGIN_SPAC_CAP_TYPE, EM_QUERY_DEV_STATE_TYPE
 from NetSDK.SDK_Struct import (
+    NET_A_DEV_VERSION_INFO,
     NET_IN_GET_SUB_CONTROLLER_INFO,
     NET_IN_LOGIN_WITH_HIGHLEVEL_SECURITY,
     NET_OUT_GET_SUB_CONTROLLER_INFO,
@@ -167,6 +168,29 @@ def probe_subcontrollers(sdk: NetClient, login_id: int) -> None:
                 print(f"    DOOR_READER door={door} reader_count={read_num} reader_ids={readers}")
 
 
+def probe_software_info(sdk: NetClient, login_id: int) -> None:
+    info = NET_A_DEV_VERSION_INFO()
+    ok = bool(
+        sdk.QueryDevState(
+            login_id,
+            EM_QUERY_DEV_STATE_TYPE.SOFTWARE,
+            info,
+            sizeof(info),
+            0,
+            5000,
+        )
+    )
+    print(f"SOFTWARE_INFO ok={ok} err={'' if ok else sdk.GetLastErrorMessage()}")
+    if ok:
+        print(
+            "  PRODUCT "
+            f"type={decode_bytes(info.szDevType)!r} "
+            f"detail_type={decode_bytes(info.szDetailType)!r} "
+            f"firmware={decode_bytes(info.szSoftWareVersion)!r} "
+            f"hardware={decode_bytes(info.szHardwareVersion)!r}"
+        )
+
+
 def probe_new_configs(sdk: NetClient, login_id: int, max_channel: int) -> None:
     channels = [-1, *range(0, max_channel + 1)]
     for command in CONFIG_CANDIDATES:
@@ -197,6 +221,7 @@ def main(argv: list[str]) -> int:
     login_id = 0
     try:
         login_id, _device_info = login(sdk)
+        probe_software_info(sdk, login_id)
         probe_subcontrollers(sdk, login_id)
         probe_new_configs(sdk, login_id, args.max_channel)
     finally:

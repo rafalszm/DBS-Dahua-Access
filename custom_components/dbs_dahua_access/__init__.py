@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
-from .const import CONF_DEVICE_NAME, DOMAIN, PLATFORMS
+from .const import CONF_DEVICE_NAME, CONF_MODEL, DOMAIN, PLATFORMS
 from .dahua import (
     AccessControllerConfig,
     DahuaAuthError,
@@ -43,14 +43,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except DahuaConnectionError as err:
         raise ConfigEntryNotReady(str(err)) from err
 
-    if device_info.name and device_info.name != entry.title:
+    updated_data = dict(entry.data)
+    if device_info.name:
+        updated_data[CONF_DEVICE_NAME] = device_info.name
+    updated_data[CONF_MODEL] = device_info.model
+    if updated_data != entry.data or (device_info.name and device_info.name != entry.title):
         hass.config_entries.async_update_entry(
             entry,
-            title=device_info.name,
-            data={
-                **entry.data,
-                CONF_DEVICE_NAME: device_info.name,
-            },
+            title=device_info.name or entry.title,
+            data=updated_data,
         )
 
     runtime = DahuaAccessRuntime(hass, entry, client, device_info)
