@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 
 from .const import CONF_DEVICE_NAME, DOMAIN, PLATFORMS
 from .dahua import (
@@ -45,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = DahuaAccessRuntime(hass, entry, client, device_info)
     await runtime.async_start()
     hass.data[DOMAIN][entry.entry_id] = runtime
+    _remove_stale_door_entities(hass, entry, runtime.device_info.serial, set(runtime.doors))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -55,3 +57,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = hass.data[DOMAIN].pop(entry.entry_id)
     await runtime.async_stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _remove_stale_door_entities(hass: HomeAssistant, entry: ConfigEntry, serial: str, door_ids: set[int]) -> None:
+    """Remove door entities left behind by earlier over-broad probing."""
+    registry = er.async_get(hass)
+    valid_unique_ids = {
+        f"{serial}_door_{door_id}_open"
+        for door_id in door_ids
+    } | {
+        f"{serial}_door_{door_id}_door"
+        for door_id in door_ids
+    }
+    stale_prefix = f"{serial}_door_"
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = str(entity.unique_id)
+        if unique_id.startswith(stale_prefix) and unique_id not in valid_unique_ids:
+            registry.async_remove(entity.entity_id)

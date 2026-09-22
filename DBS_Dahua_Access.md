@@ -1411,3 +1411,15 @@ NetSDK-2.0.0.1-py3-none-win_amd64.whl
 Loader integracji wybiera wheel na podstawie systemu i architektury, rozpakowuje go lokalnie do ignorowanego katalogu runtime i dopiero wtedy importuje `NetSDK`.
 
 Ważne ograniczenie: w aktualnie pobranych paczkach Dahua nie ma wheel'a Linux `arm64/aarch64`. Jeżeli Home Assistant działa na ARM64, integracja nadal nie może załadować natywnego SDK, ale pokaże już dokładny komunikat o braku tej architektury zamiast ogólnego `sdk_unavailable`.
+
+### 24.2. Korekta wykrywania przejść
+
+Wersja `0.1.1` ponownie popełniła błąd z fazy laboratoryjnego sondowania: `GetNewDevConfig("AccessControl", channel)` dla kanałów powyżej realnych przejść potrafi zwrócić odpowiedź, którą łatwo błędnie uznać za istnienie kolejnych drzwi.
+
+W `0.1.2` wykrywanie zostało zmienione tak, aby najpierw pytać kontroler o liczbę przejść:
+
+- główna metoda to `OperateAccessControlManager(... GETSUBCONTROLLER_INFO ...)`,
+- jeżeli kontroler nie wspiera tej metody, integracja próbuje odczytać liczbę z `AccessControlGeneral`,
+- kanały `AccessControl` są używane tylko do wzbogacenia nazw dla już ustalonej liczby drzwi,
+- encje `Przejście 5+` zostają usunięte z rejestru encji, jeśli powstały po wcześniejszej wersji integracji,
+- jeżeli kontroler nie odda liczby przejść żadną znaną metodą, integracja używa fallbacku technicznego i nie traktuje go jako wykrycia po typie urządzenia.

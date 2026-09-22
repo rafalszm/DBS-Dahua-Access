@@ -19,7 +19,7 @@ Kamery i NVR są poza zakresem pierwszej wersji integracji. Eksperymenty laborat
 
 ## Status
 
-Wersja `0.1.1` jest pierwszą wersją z bundlowanym Dahua NetSDK. Zawiera strukturę HACS, Config Flow, encje Home Assistant oraz adapter Dahua NetSDK.
+Wersja `0.1.2` jest pierwszą wersją z bundlowanym Dahua NetSDK i bez nadmiarowego tworzenia przejść wykrytych przez fałszywie pozytywne sondowanie `AccessControl`.
 
 W repozytorium są dołączone oficjalne wheel'e Dahua NetSDK dla:
 
@@ -59,6 +59,8 @@ Integracja po połączeniu próbuje pobrać:
 * model / typ urządzenia,
 * dostępne drzwi lub przejścia,
 * nazwy drzwi z konfiguracji albo z eventów kontrolera.
+
+Integracja pyta kontroler o liczbę przejść przez `GETSUBCONTROLLER_INFO`, a jeśli urządzenie tego nie obsługuje, próbuje odczytać liczbę z `AccessControlGeneral`. Lab pokazał, że samo sondowanie kolejnych kanałów `AccessControl` może zwracać fałszywe pozytywy, dlatego nie tworzymy już encji `Przejście 5+` tylko dlatego, że SDK przyjęło zapytanie konfiguracyjne.
 
 ## Eventy Home Assistant
 

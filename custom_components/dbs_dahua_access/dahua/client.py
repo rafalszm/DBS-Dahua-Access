@@ -142,29 +142,111 @@ class NetSDKAccessClient:
             self._login_id = None
 
     def discover_doors(self) -> list[AccessDoor]:
-        """Return doors/passages discovered from AccessControl config."""
+        """Ask the controller for its door/passage count and return doors."""
         self.connect()
+        door_count, count_source = self._discover_door_count()
+        if door_count is None:
+            door_count = 4
+            count_source = "fallback"
+
         doors: list[AccessDoor] = []
-        consecutive_failures = 0
-        for channel in range(32):
+        for door_id in range(1, max(1, min(door_count, 64)) + 1):
+            channel = door_id - 1
             buffer = create_string_buffer(512 * 1024)
             error = c_int(0)
             ok = bool(self._sdk.GetNewDevConfig(self._login_id, "AccessControl", channel, buffer, len(buffer), error, 3000))
             raw = bytes(buffer).split(b"\x00", 1)[0]
-            if not ok and not raw:
-                consecutive_failures += 1
-                if doors and consecutive_failures >= 4:
-                    break
-                continue
-
-            consecutive_failures = 0
-            door_id = channel + 1
             label = self._label_from_access_control_config(raw) or resolve_door_label(door_id)
-            doors.append(AccessDoor(door_id=door_id, label=label, source="config" if raw else "probe"))
+            source = "config" if raw else count_source
+            doors.append(AccessDoor(door_id=door_id, label=label, source=source))
+        return doors
 
-        if doors:
-            return doors
-        return [AccessDoor(door_id=index, label=resolve_door_label(index), source="default") for index in range(1, 5)]
+    def _discover_door_count(self) -> tuple[int | None, str]:
+        count = self._door_count_from_subcontrollers()
+        if count:
+            return count, "subcontroller_info"
+        count = self._door_count_from_access_control_general()
+        if count:
+            return count, "access_control_general"
+        return None, "unknown"
+
+    def _door_count_from_subcontrollers(self) -> int | None:
+        structs = self._sdk_modules["structs"]
+        enums = self._sdk_modules["enums"]
+        if not all(
+            hasattr(structs, name)
+            for name in ("NET_IN_GET_SUB_CONTROLLER_INFO", "NET_OUT_GET_SUB_CONTROLLER_INFO")
+        ):
+            return None
+
+        in_param = structs.NET_IN_GET_SUB_CONTROLLER_INFO()
+        in_param.dwSize = sizeof(structs.NET_IN_GET_SUB_CONTROLLER_INFO)
+        in_param.nSubControllerID[0] = -1
+        in_param.nSubControllerNum = 1
+
+        out_param = structs.NET_OUT_GET_SUB_CONTROLLER_INFO()
+        out_param.dwSize = sizeof(structs.NET_OUT_GET_SUB_CONTROLLER_INFO)
+
+        ok = bool(
+            self._sdk.OperateAccessControlManager(
+                self._login_id,
+                enums.EM_A_NET_EM_ACCESS_CTL_MANAGER.NET_EM_ACCESS_CTL_GETSUBCONTROLLER_INFO,
+                in_param,
+                out_param,
+                5000,
+            )
+        )
+        if not ok:
+            _LOGGER.debug("Dahua subcontroller door-count query failed: %s", self._sdk.GetLastErrorMessage())
+            return None
+
+        returned = max(0, min(int(out_param.nRetNum), 64))
+        if returned == 0:
+            return None
+
+        explicit_counts: list[int] = []
+        reader_door_ids: list[int] = []
+        for index in range(returned):
+            item = out_param.stuSubControllerInfo[index]
+            door_count = int(getattr(item, "nDoorNum", 0))
+            if 0 < door_count <= 64:
+                explicit_counts.append(door_count)
+            for reader_index in range(min(max(door_count, 0), 128)):
+                reader = item.stuReaderInfo[reader_index]
+                door_id = int(getattr(reader, "nDoor", 0))
+                if 0 < door_id <= 64:
+                    reader_door_ids.append(door_id)
+
+        if reader_door_ids:
+            return max(reader_door_ids)
+        if len(explicit_counts) == 1:
+            return explicit_counts[0]
+        if explicit_counts:
+            return sum(explicit_counts)
+        return None
+
+    def _door_count_from_access_control_general(self) -> int | None:
+        for channel in (-1, 0):
+            buffer = create_string_buffer(512 * 1024)
+            error = c_int(0)
+            ok = bool(
+                self._sdk.GetNewDevConfig(
+                    self._login_id,
+                    "AccessControlGeneral",
+                    channel,
+                    buffer,
+                    len(buffer),
+                    error,
+                    3000,
+                )
+            )
+            raw = bytes(buffer).split(b"\x00", 1)[0]
+            if not ok and not raw:
+                continue
+            count = self._door_count_from_config(raw)
+            if count:
+                return count
+        return None
 
     def start_listening(self, callback: EventCallback) -> None:
         """Start push-event listening."""
@@ -414,6 +496,25 @@ class NetSDKAccessClient:
         return ""
 
     @staticmethod
+    def _door_count_from_config(raw: bytes) -> int | None:
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return None
+        for key, value in _walk_values(parsed):
+            key_lower = key.lower()
+            if key_lower in {"doorcount", "doorcnt", "doornum", "ndoorcount", "ndoornum"}:
+                try:
+                    count = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 < count <= 64:
+                    return count
+        return None
+
+    @staticmethod
     def _name_from_config(raw: bytes) -> str:
         if not raw:
             return ""
@@ -438,4 +539,17 @@ def _walk_text_values(value: Any, parent_key: str = "") -> list[tuple[str, str]]
             found.extend(_walk_text_values(child, parent_key))
     elif isinstance(value, str):
         found.append((parent_key, value.strip()))
+    return found
+
+
+def _walk_values(value: Any, parent_key: str = "") -> list[tuple[str, Any]]:
+    found: list[tuple[str, Any]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            found.extend(_walk_values(child, str(key)))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_walk_values(child, parent_key))
+    else:
+        found.append((parent_key, value))
     return found
